@@ -3,11 +3,11 @@ SOURCE	= src/hpsdr_debug.c  src/hpsdr_functions.c  src/hpsdr_newprotocol.c  src/
 HEADER	= src/hpsdr_debug.h  src/hpsdr_definitions.h  src/hpsdr_functions.h  src/hpsdr_sim.h
 OUT	= hpsdr_sim
 CC	 = gcc
-FLAGS	 = -g -c -Wall
+CFLAGS	 = -ggdb -c -Wall
 LFLAGS	 = -lm -lrt -lpthread 
 
 all: $(OBJS)
-	$(CC) -g $(OBJS) -o $(OUT) $(LFLAGS)
+	$(CC) -ggdb $(OBJS) -o $(OUT) $(LFLAGS) -lbladeRF
 
 hpsdrsim.o: src/hpsdr_sim.c
 	$(CC) $(FLAGS) hpsdr_sim.c 

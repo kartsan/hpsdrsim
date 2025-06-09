@@ -10,6 +10,8 @@
 #include <arpa/inet.h>
 #include <math.h>
 
+#include <libbladeRF.h>
+
 #define EXTERN extern
 #include "hpsdr_sim.h"
 #include "hpsdr_debug.h"
@@ -123,8 +125,10 @@ void* rx_hardware_thread(void*);
 static double txlevel;
 
 int new_protocol_running() {
-    if (run)
+    if (run) {
+	printf("new\n");
         return 1;
+    }
     else
         return 0;
 }
@@ -392,6 +396,7 @@ void* ddc_specific_thread(void *data) {
             rc = (buffer[18 + 6 * i] << 8) + buffer[19 + 6 * i];
             if (rc != rxrate[i]) {
                 modified = 1;
+                printf("RX: DDC%d Rate=%d\n", i, rc);
                 rxrate[i] = rc;
                 modified = 1;
             }
@@ -405,6 +410,7 @@ void* ddc_specific_thread(void *data) {
                 modified = 1;
                 ddcenable[i] = rc;
             }
+
             if (modified) {
                 dbg_printf(1, "RX: DDC%d Enable=%d ADC%d Rate=%d SyncMap=%02x\n", i, ddcenable[i], adcmap[i], rxrate[i], syncddc[i]);
                 rc = 0;
@@ -780,6 +786,15 @@ void* rx_thread(void *data) {
     int decimation;
     unsigned int seed;
 
+    int samples_per_packet = 238; // 238 I/Q pairs per packet (default)
+    int16_t bladerf_buf[2 * 238]; // 2*238 for I/Q pairs
+    struct bladerf_devinfo dev_info;
+    struct bladerf *dev = NULL;
+    int status;
+    unsigned int actual_count = 0;
+    bladerf_channel_layout channel_layout = BLADERF_RX_X1;
+    bladerf_format fmt  = BLADERF_FORMAT_SC16_Q11_META;
+
     struct timespec delay;
 
     syncadc = 0;
@@ -787,6 +802,10 @@ void* rx_thread(void *data) {
     myddc = (int) (uintptr_t) data;
     if (myddc < 0 || myddc >= NUMRECEIVERS)
         return NULL;
+
+    if (myddc > 0) {
+        return NULL;
+    }
 
     dbg_printf(1, "-- Start rx_thread %d port: %d\n", myddc, ddc0_port + myddc);
 
@@ -814,6 +833,67 @@ void* rx_thread(void *data) {
         return NULL;
     }
 
+    bladerf_init_devinfo(&dev_info);
+
+    // --- bladeRF setup ---
+    status = bladerf_open_with_devinfo(&dev, &dev_info);
+    if (status != 0) {
+        dbg_printf(1, "Failed to open bladeRF: %s\n", bladerf_strerror(status));
+        close(sock);
+        return NULL;
+    }
+    status = bladerf_set_frequency(dev, BLADERF_CHANNEL_RX(0), 87700000);
+    if (status != 0) {
+        fprintf(stderr, "Failed to set frequency = %s\n", bladerf_strerror(status));
+        bladerf_close(dev);
+        close(sock);
+        return NULL;
+    }
+    // Set sample rate to 768 kHz
+    status = bladerf_set_sample_rate(dev, BLADERF_CHANNEL_RX(0), 1536000, NULL);
+    if (status != 0) {
+        dbg_printf(1, "Failed to set sample rate: %s\n", bladerf_strerror(status));
+        bladerf_close(dev);
+        close(sock);
+        return NULL;
+    }
+    status = bladerf_set_bandwidth(dev, BLADERF_CHANNEL_RX(0), 192000, NULL);
+    if (status != 0) {
+        fprintf(stderr, "Failed to set bandwidth = %s\n", bladerf_strerror(status));
+        return NULL;
+    }
+#if 0
+    status = bladerf_set_gain(dev, BLADERF_CHANNEL_RX(0), 30);
+    if (status != 0) {
+        fprintf(stderr, "Failed to set gain: %s\n", bladerf_strerror(status));
+        return status;
+    }
+#endif
+    status = bladerf_set_bias_tee(dev, BLADERF_CHANNEL_RX(0), true);
+    if (status != 0) {
+        dbg_printf(1, "Failed to enable bias: %s\n", bladerf_strerror(status));
+        bladerf_close(dev);
+        close(sock);
+        return NULL;
+    }
+    
+    status = bladerf_sync_config(dev, channel_layout,
+                                 fmt, 16, 4096, 8, 1000);
+    if (status != 0) {
+        dbg_printf(1, "Failed to configure sync: %s\n", bladerf_strerror(status));
+        bladerf_close(dev);
+        close(sock);
+        return NULL;
+    }
+    // Enable RX module
+    status = bladerf_enable_module(dev, BLADERF_CHANNEL_RX(0), true);
+    if (status != 0) {
+        dbg_printf(1, "Failed to enable RX module: %s\n", bladerf_strerror(status));
+        bladerf_close(dev);
+        close(sock);
+        return NULL;
+    }
+
     tonept = noisept = 0;
     clock_gettime(CLOCK_MONOTONIC, &delay);
     dbg_printf(1, "RX thread %d, enabled=%d\n", myddc, ddcenable[myddc]);
@@ -822,8 +902,15 @@ void* rx_thread(void *data) {
         rxptr += NEWRTXLEN;
     divptr = 0;
 
+    struct bladerf_metadata meta;
+    memset(&meta, 0, sizeof(meta));
+    meta.flags = BLADERF_META_FLAG_RX_NOW;
+
     while (run) {
-        if (ddcenable[myddc] <= 0 || rxrate[myddc] == 0 || rxfreq[myddc] == 0) {
+        // receive data from the RX specific thread
+        #if 1
+        if (ddcenable[myddc] <= 0 | rxrate[myddc] == 0/* || rxfreq[myddc] == 0*/) {
+            printf("RX thread %d: DDC not enabled, waiting...\n", myddc);
             usleep(5000);
             clock_gettime(CLOCK_MONOTONIC, &delay);
             rxptr = txptr - 4096;
@@ -831,16 +918,19 @@ void* rx_thread(void *data) {
                 rxptr += NEWRTXLEN;
             continue;
         }
-        decimation = 1536 / rxrate[myddc];
+        #endif
+//        decimation = 1536 / rxrate[myddc];
         myadc = adcmap[myddc];
         // for simplicity, we only allow for a single "synchronized" DDC,
         // this well covers the PURESIGNAL and DIVERSITY cases
         sync = 0;
+#if 0
         i = syncddc[myddc];
         while (i) {
             sync++;
             i = i >> 1;
         }
+#endif
         // sync == 0 means no synchronizatsion
         // sync == 1,2,3  means synchronization with DDC0,1,2
         // Usually we send 238 samples per buffer, but with synchronization
@@ -848,7 +938,7 @@ void* rx_thread(void *data) {
         if (sync) {
             size = 119;
             wait = 119000000L / rxrate[myddc]; // time for these samples in nano-secs
-            syncadc = adcmap[sync - 1];
+//            syncadc = adcmap[sync - 1];
         } else {
             size = 238;
             wait = 238000000L / rxrate[myddc]; // time for these samples in nano-secs
@@ -879,6 +969,7 @@ void* rx_thread(void *data) {
         *p++ = 24;
         *p++ = 0;
         *p++ = sync ? 2 * size : size;  // should be 238 in either case
+#if 0        
         for (i = 0; i < size; i++) {
             // produce noise depending on the ADC
             i1sample = i0sample = noiseItab[noisept];
@@ -967,12 +1058,49 @@ void* rx_thread(void *data) {
         }
 
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &delay, NULL);
+#else
+        // Receive samples from bladeRF (blocking)
+        status = bladerf_sync_rx(dev, bladerf_buf, samples_per_packet, &meta, 1000);
+//        printf("RX thread %d: bladerf_sync_rx status=%d, actual_count=%u\n", myddc, status, actual_count);
+        if (status != 0) {
+            dbg_printf(1, "bladeRF RX error or short read: %s (got %u samples)\n", bladerf_strerror(status), actual_count);
+            continue;
+        }
 
+        // 24 bits per sample (protocol expects 24 bits/sample, bladeRF gives 16 bits/sample)
+        // Pack I/Q samples into 24-bit format (sign-extend 16->24 bits)
+        for (i = 0; i < samples_per_packet; i++) {
+            int32_t sample_i = (int16_t)bladerf_buf[2*i];
+            int32_t sample_q = (int16_t)bladerf_buf[2*i+1];
+            // I
+            *p++ = 0;
+            *p++ = (sample_i >> 8) & 0xFF;
+            *p++ = (sample_i >> 0) & 0xFF;
+            // Q
+            *p++ = 0;
+            *p++ = (sample_q >> 8) & 0xFF;
+            *p++ = (sample_q >> 0) & 0xFF;
+        }
+
+#if 1        
+        delay.tv_nsec += wait;
+        while (delay.tv_nsec >= 1000000000) {
+            delay.tv_nsec -= 1000000000;
+            delay.tv_sec++;
+        }
+
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &delay, NULL);
+#endif
+#endif
         if (sendto(sock, buffer, 1444, 0, (struct sockaddr*) &addr_new, sizeof(addr_new)) < 0) {
             dbg_printf(1, "***** ERROR: RX thread sendto\n");
             break;
         }
     }
+
+    printf("RX thread %d: exiting\n", myddc);
+    bladerf_enable_module(dev, BLADERF_CHANNEL_RX(0), false);
+    bladerf_close(dev);
     close(sock);
     return NULL;
 }

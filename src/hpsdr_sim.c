@@ -254,7 +254,7 @@ int main(int argc, char *argv[]) {
         if (!strncmp(argv[i], "-debug", 3)) {
             dbg_setlevel(1);
         }
-        if (!strncmp(argv[i], "-help", 3) || !strncmp(argv[i], "--help", 3)) {
+        if (!strncmp(argv[i], "-help", 5) || !strncmp(argv[i], "--help", 6)) {
             printf("Options:\n"
                     "    -atlas: \n"
                     "    -hermes: \n"
@@ -430,6 +430,7 @@ int main(int argc, char *argv[]) {
         memcpy(buffer, id, 4);
 
         if (sock_TCP_Client > -1) {
+            printf("sock_TCP_Client: %d connected to sock_TCP_Server: %d\n", sock_TCP_Client, sock_TCP_Server);
             // Using recvmmsg with a time-out should be used for a byte-stream protocol like TCP
             // (Each "packet" in the datagram may be incomplete). This is especially true if the
             // socket has a receive time-out, but this problem also occurs if the is no such
@@ -506,6 +507,7 @@ int main(int argc, char *argv[]) {
         dbg_printf(2, "-- code received: %04x (%d)\n", code, code);
 
         switch (code) {
+#if 0
         // PC to SDR transmission via process_ep2
         case 0x0201feef:
             // processing an invalid packet is too dangerous -- skip it!
@@ -522,7 +524,7 @@ int main(int argc, char *argv[]) {
             }
 
             last_seqnum = seqnum;
-
+printf("RX: SEQ %ld\n", (long) seqnum);
             process_ep2(buffer + 11);
             process_ep2(buffer + 523);
 
@@ -608,7 +610,6 @@ int main(int argc, char *argv[]) {
                     txptr = 0;
             }
             break;
-
         // respond to an incoming Metis detection request
         case 0x0002feef:
             if (oldnew == 2) {
@@ -654,7 +655,6 @@ int main(int argc, char *argv[]) {
             }
 
             break;
-
         // stop the SDR to PC transmission via handler_ep6
         case 0x0004feef:
             dbg_printf(1, "STOP the transmission via handler_ep6 / code: 0x%08x\n", code);
@@ -678,6 +678,8 @@ int main(int argc, char *argv[]) {
         case 0x0104feef:
         case 0x0204feef:
         case 0x0304feef:
+            printf("OldProtocol START command received / code: 0x%08x\n", code);
+
             if (new_protocol_running()) {
                 dbg_printf(1, "OldProtocol START command received but NewProtocol radio already running!\n");
                 break;
@@ -714,6 +716,7 @@ int main(int argc, char *argv[]) {
             pthread_detach(thread);
             break;
 
+#endif
         default:
              // Here we have to handle the following "non standard" cases:
              // OldProtocol "program"   packet
@@ -724,7 +727,7 @@ int main(int argc, char *argv[]) {
              // NewProtocol "erase"     packet
              // NewProtocol "Set IP"    packet
              // NewProtocol "General"   packet  ==> this starts NewProtocol radio
-
+#if 0
             if (bytes_read == 264 && buffer[0] == 0xEF && buffer[1] == 0xFE && buffer[2] == 0x03 && buffer[3] == 0x01) {
                 static long cnt = 0;
                 unsigned long blks = (buffer[4] << 24) + (buffer[5] << 16) + (buffer[6] << 8) + buffer[7];
@@ -758,7 +761,7 @@ int main(int argc, char *argv[]) {
                 sendto(sock_udp, buffer, 63, 0, (struct sockaddr*) &addr_from, sizeof(addr_from));
                 break;
             }
-
+#endif
             if (code == 0 && buffer[4] == 0x02) {
                 if (oldnew == 1) {
                     dbg_printf(1, "NewProtocol discovery packet IGNORED.\n");
