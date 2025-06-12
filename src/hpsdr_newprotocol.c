@@ -12,6 +12,12 @@
 
 #include <libbladeRF.h>
 
+//#define LIQUID_MODE 1
+#ifdef LIQUID_MODE
+#include <liquid/liquid.h>
+#define DECIMATION_FACTOR 4
+#endif
+
 #define EXTERN extern
 #include "hpsdr_sim.h"
 #include "hpsdr_debug.h"
@@ -130,7 +136,7 @@ struct bladerf *bladerf_dev = NULL;
 
 
 // Add these defines and struct at the top of the file
-#if 1
+#if 0
 #define DECIMATION_FACTOR 4
 #define FILTER_LENGTH 64
 
@@ -199,7 +205,7 @@ static const float lpf_coeff[FILTER_LENGTH] = {
 };
 #endif
 
-#ifdef DECIMATION_FACTOR
+#ifdef FILTER_LENGTH
 // Filter state
 struct filter_state {
     int16_t buffer[FILTER_LENGTH];  // Circular buffer for input samples
@@ -914,7 +920,10 @@ void* rx_thread(void *data) {
     int decimation;
     unsigned int seed;
 
-#ifdef DECIMATION_FACTOR
+#ifdef FILTER_LENGTH
+    int samples_per_packet = 238 * DECIMATION_FACTOR; // 238 I/Q pairs per packet (default)
+    int16_t bladerf_buf[2 * 238 * DECIMATION_FACTOR]; // 2*238 for I/Q pairs
+#elif defined(LIQUID_MODE)
     int samples_per_packet = 238 * DECIMATION_FACTOR; // 238 I/Q pairs per packet (default)
     int16_t bladerf_buf[2 * 238 * DECIMATION_FACTOR]; // 2*238 for I/Q pairs
 #else
@@ -1045,6 +1054,10 @@ void* rx_thread(void *data) {
     struct bladerf_metadata meta;
     memset(&meta, 0, sizeof(meta));
     meta.flags = BLADERF_META_FLAG_RX_NOW;
+
+#ifdef LIQUID_MODE
+    msresamp_crcf decim = msresamp_crcf_create(0.25f, 60.0f); // 60 dB stopband
+#endif
 
     while (run) {
         // receive data from the RX specific thread
@@ -1208,6 +1221,25 @@ void* rx_thread(void *data) {
             continue;
         }
 
+#ifdef LIQUID_MODE
+        float complex in[2 * samples_per_packet], out[2 * samples_per_packet];
+        unsigned int num_written;
+        for (int i = 0; i < samples_per_packet; i++)
+            in[i] = bladerf_buf[2*i] / 4096.0f + _Complex_I * (bladerf_buf[2*i+1] / 4096.0f);
+        msresamp_crcf_execute(decim, in, samples_per_packet, out, &num_written);
+        for (int i = 0; i < samples_per_packet / DECIMATION_FACTOR; i++) {
+            int32_t sample_i = (int32_t)(crealf(out[i]) * 16777215.0f);
+            int32_t sample_q = (int32_t)(cimagf(out[i]) * 16777215.0f);
+            // Q sample
+            *p++ = (sample_q >> 16) & 0xFF;
+            *p++ = (sample_q >> 8) & 0xFF;
+            *p++ = (sample_q >> 0) & 0xFF;
+            // I sample
+            *p++ = (sample_i >> 16) & 0xFF;
+            *p++ = (sample_i >> 8) & 0xFF;
+            *p++ = (sample_i >> 0) & 0xFF;
+        }
+#else
         // 24 bits per sample (protocol expects 24 bits/sample, bladeRF gives 16 bits/sample)
         // Pack I/Q samples into 24-bit format (sign-extend 16->24 bits)
         for (i = 0; i < samples_per_packet; i++) {
@@ -1230,24 +1262,6 @@ void* rx_thread(void *data) {
             *p++ = (sample_i >> 16) & 0xFF;
             *p++ = (sample_i >> 8) & 0xFF;
             *p++ = (sample_i >> 0) & 0xFF;
-#if 0
-            // I
-            *p++ = (sample_i >> 16) & 0xFF;
-            *p++ = (sample_i >> 8) & 0xFF;
-            *p++ = (sample_i >> 0) & 0xFF;
-            // Q
-            *p++ = (sample_q >> 16) & 0xFF;
-            *p++ = (sample_q >> 8) & 0xFF;
-            *p++ = (sample_q >> 0) & 0xFF;
-#else
-            *p++ = (sample_q >> 16) & 0xFF;
-            *p++ = (sample_q >> 8) & 0xFF;
-            *p++ = (sample_q >> 0) & 0xFF;
-            // Q
-            *p++ = (sample_i >> 16) & 0xFF;
-            *p++ = (sample_i >> 8) & 0xFF;
-            *p++ = (sample_i >> 0) & 0xFF;
-#endif
 #else
     // Apply filter
     int32_t filtered_i = fir_filter(&i_state, sample_i);
@@ -1275,6 +1289,7 @@ void* rx_thread(void *data) {
     decimation_counter = (decimation_counter + 1) % DECIMATION_FACTOR;
 #endif
         }
+#endif // LIQUID_MODE
 
 #if 0      
         delay.tv_nsec += wait;

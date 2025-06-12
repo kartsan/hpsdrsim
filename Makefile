@@ -7,7 +7,7 @@ CFLAGS	 = -ggdb -c -Wall
 LFLAGS	 = -lm -lrt -lpthread 
 
 all: $(OBJS)
-	$(CC) -ggdb $(OBJS) -o $(OUT) $(LFLAGS) -lbladeRF
+	$(CC) -ggdb $(OBJS) -o $(OUT) $(LFLAGS) -lbladeRF -lliquid
 
 hpsdrsim.o: src/hpsdr_sim.c
 	$(CC) $(FLAGS) hpsdr_sim.c 
