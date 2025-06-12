@@ -123,6 +123,119 @@ void* tx_hardware_thread(void*);
 void* rx_hardware_thread(void*);
 
 static double txlevel;
+struct bladerf *bladerf_dev = NULL;
+
+
+
+
+
+// Add these defines and struct at the top of the file
+#if 1
+#define DECIMATION_FACTOR 4
+#define FILTER_LENGTH 64
+
+// FIR filter coefficients for 192kHz output 
+// decimation (lowpass, cutoff ~80kHz)
+static const float lpf_coeff[FILTER_LENGTH] = {
+    0.000792f,0.000769f,0.000425f,-0.000219f,-0.001009f,-0.001628f,-0.001658f,
+    -0.000783f,0.000952f,0.002975f,0.004286f,0.003850f,0.001183f,-0.003158f,
+    -0.007498f,-0.009556f,-0.007459f,-0.000856f,0.008405f,0.016535f,0.019091f,
+    0.012954f,-0.001770f,-0.020825f,-0.036474f,-0.039777f,-0.023843f,0.013156f,
+    0.066405f,0.125104f,0.175341f,0.204289f,0.204289f,0.175341f,0.125104f,
+    0.066405f,0.013156f,-0.023843f,-0.039777f,-0.036474f,-0.020825f,-0.001770f,
+    0.012954f,0.019091f,0.016535f,0.008405f,-0.000856f,-0.007459f,-0.009556f,
+    -0.007498f,-0.003158f,0.001183f,0.003850f,0.004286f,0.002975f,0.000952f,
+    -0.000783f,-0.001658f,-0.001628f,-0.001009f,-0.000219f,0.000425f,0.000769f,0.000792f
+};
+#endif
+
+#if 0
+#define DECIMATION_FACTOR 8  // Changed from 4 to 8
+#define FILTER_LENGTH 128    // Increased filter length for better response
+
+// Update filter coefficients for 96kHz output
+static const float lpf_coeff[FILTER_LENGTH] = {
+    // Coefficients for 40kHz lowpass filter (use Python to generate)
+    // Cutoff needs to be less than 96kHz/2 = 48kHz to prevent aliasing
+    0.000375f,0.000410f,0.000407f,0.000363f,0.000277f,0.000148f,-0.000018f,-0.000213f,
+    -0.000420f,-0.000619f,-0.000782f,-0.000883f,-0.000893f,-0.000790f,-0.000563f,-0.000215f,
+    0.000236f,0.000752f,0.001279f,0.001749f,0.002091f,0.002235f,0.002125f,0.001728f,0.001043f,
+    0.000105f,-0.001011f,-0.002197f,-0.003314f,-0.004212f,-0.004745f,-0.004788f,-0.004258f,
+    -0.003129f,-0.001447f,0.000671f,0.003035f,0.005398f,0.007478f,0.008983f,0.009647f,0.009263f,
+    0.007718f,0.005012f,0.001282f,-0.003202f,-0.008042f,-0.012738f,-0.016728f,-0.019433f,
+    -0.020312f,-0.018916f,-0.014939f,-0.008257f,0.001041f,0.012649f,0.026054f,0.040563f,0.055351f,
+    0.069523f,0.082183f,0.092506f,0.099802f,0.103579f,0.103579f,0.099802f,0.092506f,0.082183f,
+    0.069523f,0.055351f,0.040563f,0.026054f,0.012649f,0.001041f,-0.008257f,-0.014939f,-0.018916f,
+    -0.020312f,-0.019433f,-0.016728f,-0.012738f,-0.008042f,-0.003202f,0.001282f,0.005012f,0.007718f,
+    0.009263f,0.009647f,0.008983f,0.007478f,0.005398f,0.003035f,0.000671f,-0.001447f,-0.003129f,
+    -0.004258f,-0.004788f,-0.004745f,-0.004212f,-0.003314f,-0.002197f,-0.001011f,0.000105f,0.001043f,
+    0.001728f,0.002125f,0.002235f,0.002091f,0.001749f,0.001279f,0.000752f,0.000236f,-0.000215f,-0.000563f,
+    -0.000790f,-0.000893f,-0.000883f,-0.000782f,-0.000619f,-0.000420f,-0.000213f,-0.000018f,0.000148f,
+    0.000277f,0.000363f,0.000407f,0.000410f,0.000375f
+};
+#endif
+
+#if 0
+#define DECIMATION_FACTOR 16
+#define FILTER_LENGTH 128
+
+// Update filter coefficients for 48kHz output
+static const float lpf_coeff[FILTER_LENGTH] = {
+    -0.000330f,-0.000295f,-0.000253f,-0.000204f,-0.000146f,-0.000075f,0.000009f,0.000108f,
+    0.000223f,0.000354f,0.000500f,0.000657f,0.000824f,0.000993f,0.001159f,0.001314f,0.001447f,
+    0.001548f,0.001608f,0.001614f,0.001557f,0.001427f,0.001216f,0.000918f,0.000530f,0.000053f,
+    -0.000511f,-0.001154f,-0.001863f,-0.002623f,-0.003413f,-0.004208f,-0.004981f,-0.005700f,
+    -0.006332f,-0.006840f,-0.007191f,-0.007347f,-0.007275f,-0.006945f,-0.006328f,-0.005402f,
+    -0.004151f,-0.002565f,-0.000642f,0.001612f,0.004183f,0.007048f,0.010175f,0.013526f,0.017054f,
+    0.020707f,0.024425f,0.028147f,0.031808f,0.035341f,0.038682f,0.041765f,0.044533f,0.046930f,
+    0.048908f,0.050429f,0.051460f,0.051981f,0.051981f,0.051460f,0.050429f,0.048908f,0.046930f,
+    0.044533f,0.041765f,0.038682f,0.035341f,0.031808f,0.028147f,0.024425f,0.020707f,0.017054f,
+    0.013526f,0.010175f,0.007048f,0.004183f,0.001612f,-0.000642f,-0.002565f,-0.004151f,-0.005402f,
+    -0.006328f,-0.006945f,-0.007275f,-0.007347f,-0.007191f,-0.006840f,-0.006332f,-0.005700f,
+    -0.004981f,-0.004208f,-0.003413f,-0.002623f,-0.001863f,-0.001154f,-0.000511f,0.000053f,
+    0.000530f,0.000918f,0.001216f,0.001427f,0.001557f,0.001614f,0.001608f,0.001548f,0.001447f,
+    0.001314f,0.001159f,0.000993f,0.000824f,0.000657f,0.000500f,0.000354f,0.000223f,0.000108f,
+    0.000009f,-0.000075f,-0.000146f,-0.000204f,-0.000253f,-0.000295f,-0.000330f
+};
+#endif
+
+#ifdef DECIMATION_FACTOR
+// Filter state
+struct filter_state {
+    int16_t buffer[FILTER_LENGTH];  // Circular buffer for input samples
+    int pos;                        // Current position in buffer
+};
+
+// Function to process one sample through the filter
+static int32_t fir_filter(struct filter_state *state, int16_t new_sample) {
+    int32_t acc = 0;
+    int i, index;
+
+    // Add new sample to buffer
+    state->buffer[state->pos] = new_sample;
+    state->pos = (state->pos + 1) % FILTER_LENGTH;
+
+    // Calculate filtered sample
+    for (i = 0; i < FILTER_LENGTH; i++) {
+        index = (state->pos - i + FILTER_LENGTH) % FILTER_LENGTH;
+        acc += (int32_t)(state->buffer[index] * lpf_coeff[i]);
+    }
+
+    return acc;
+}
+
+// In rx_thread(), add filter state initialization:
+struct filter_state i_state = {.pos = 0};
+struct filter_state q_state = {.pos = 0};
+int decimation_counter = 0;
+int output_samples = 0;
+#endif
+
+
+
+
+
+
 
 int new_protocol_running() {
     if (run) {
@@ -686,6 +799,8 @@ void* highprio_thread(void *data) {
             if (freq != rxfreq[i]) {
                 rxfreq[i] = freq;
                 dbg_printf(1, "HP: DDC%d freq: %lu\n", i, freq);
+                if (bladerf_dev)
+                  (void)bladerf_set_frequency(bladerf_dev, BLADERF_CHANNEL_RX(0), 446000000 + freq);
             }
         }
         freq = (buffer[329] << 24) + (buffer[330] << 16) + (buffer[331] << 8) + buffer[332];
@@ -762,6 +877,19 @@ void* highprio_thread(void *data) {
     return NULL;
 }
 
+static int32_t scale_12bit_to_24bit(int16_t value12) {
+    // First, sign-extend the 12-bit value
+    int32_t extended;
+    if (value12 & 0x800) {
+        extended = value12 | 0xFFFFF000;
+    } else {
+        extended = value12 & 0x0FFF;
+    }
+
+    // Scale to use the full 24-bit signed range
+    return extended * 4096; // or << 12
+}
+
 void* rx_thread(void *data) {
     int sock;
     struct sockaddr_in addr;
@@ -786,14 +914,18 @@ void* rx_thread(void *data) {
     int decimation;
     unsigned int seed;
 
+#ifdef DECIMATION_FACTOR
+    int samples_per_packet = 238 * DECIMATION_FACTOR; // 238 I/Q pairs per packet (default)
+    int16_t bladerf_buf[2 * 238 * DECIMATION_FACTOR]; // 2*238 for I/Q pairs
+#else
     int samples_per_packet = 238; // 238 I/Q pairs per packet (default)
     int16_t bladerf_buf[2 * 238]; // 2*238 for I/Q pairs
-    struct bladerf_devinfo dev_info;
-    struct bladerf *dev = NULL;
+#endif
     int status;
     unsigned int actual_count = 0;
     bladerf_channel_layout channel_layout = BLADERF_RX_X1;
     bladerf_format fmt  = BLADERF_FORMAT_SC16_Q11_META;
+    struct bladerf_devinfo dev_info;
 
     struct timespec delay;
 
@@ -836,60 +968,68 @@ void* rx_thread(void *data) {
     bladerf_init_devinfo(&dev_info);
 
     // --- bladeRF setup ---
-    status = bladerf_open_with_devinfo(&dev, &dev_info);
+    bladerf_dev = NULL;
+    status = bladerf_open_with_devinfo(&bladerf_dev, &dev_info);
     if (status != 0) {
         dbg_printf(1, "Failed to open bladeRF: %s\n", bladerf_strerror(status));
         close(sock);
         return NULL;
     }
-    status = bladerf_set_frequency(dev, BLADERF_CHANNEL_RX(0), 87700000);
+    status = bladerf_set_frequency(bladerf_dev, BLADERF_CHANNEL_RX(0), 446000000);
     if (status != 0) {
         fprintf(stderr, "Failed to set frequency = %s\n", bladerf_strerror(status));
-        bladerf_close(dev);
+        bladerf_close(bladerf_dev);
+        bladerf_dev = NULL;
         close(sock);
         return NULL;
     }
     // Set sample rate to 768 kHz
-    status = bladerf_set_sample_rate(dev, BLADERF_CHANNEL_RX(0), 1536000, NULL);
+    status = bladerf_set_sample_rate(bladerf_dev, BLADERF_CHANNEL_RX(0), 768000, NULL);
     if (status != 0) {
         dbg_printf(1, "Failed to set sample rate: %s\n", bladerf_strerror(status));
-        bladerf_close(dev);
+        bladerf_close(bladerf_dev);
+        bladerf_dev = NULL;
         close(sock);
         return NULL;
     }
-    status = bladerf_set_bandwidth(dev, BLADERF_CHANNEL_RX(0), 192000, NULL);
+    status = bladerf_set_bandwidth(bladerf_dev, BLADERF_CHANNEL_RX(0), 1536000, NULL);
     if (status != 0) {
         fprintf(stderr, "Failed to set bandwidth = %s\n", bladerf_strerror(status));
+        bladerf_close(bladerf_dev);
+        bladerf_dev = NULL;
         return NULL;
     }
-#if 0
-    status = bladerf_set_gain(dev, BLADERF_CHANNEL_RX(0), 30);
+#if 1
+    status = bladerf_set_gain(bladerf_dev, BLADERF_CHANNEL_RX(0), 0);
     if (status != 0) {
         fprintf(stderr, "Failed to set gain: %s\n", bladerf_strerror(status));
         return status;
     }
 #endif
-    status = bladerf_set_bias_tee(dev, BLADERF_CHANNEL_RX(0), true);
+    status = bladerf_set_bias_tee(bladerf_dev, BLADERF_CHANNEL_RX(0), false);
     if (status != 0) {
         dbg_printf(1, "Failed to enable bias: %s\n", bladerf_strerror(status));
-        bladerf_close(dev);
+        bladerf_close(bladerf_dev);
+        bladerf_dev = NULL;
         close(sock);
         return NULL;
     }
     
-    status = bladerf_sync_config(dev, channel_layout,
+    status = bladerf_sync_config(bladerf_dev, channel_layout,
                                  fmt, 16, 4096, 8, 1000);
     if (status != 0) {
         dbg_printf(1, "Failed to configure sync: %s\n", bladerf_strerror(status));
-        bladerf_close(dev);
+        bladerf_close(bladerf_dev);
+        bladerf_dev = NULL;
         close(sock);
         return NULL;
     }
     // Enable RX module
-    status = bladerf_enable_module(dev, BLADERF_CHANNEL_RX(0), true);
+    status = bladerf_enable_module(bladerf_dev, BLADERF_CHANNEL_RX(0), true);
     if (status != 0) {
         dbg_printf(1, "Failed to enable RX module: %s\n", bladerf_strerror(status));
-        bladerf_close(dev);
+        bladerf_close(bladerf_dev);
+        bladerf_dev = NULL;
         close(sock);
         return NULL;
     }
@@ -909,8 +1049,9 @@ void* rx_thread(void *data) {
     while (run) {
         // receive data from the RX specific thread
         #if 1
-        if (ddcenable[myddc] <= 0 | rxrate[myddc] == 0/* || rxfreq[myddc] == 0*/) {
-            printf("RX thread %d: DDC not enabled, waiting...\n", myddc);
+        if (ddcenable[myddc] <= 0 | rxrate[myddc] == 0 || rxfreq[myddc] == 0) {
+          //  printf("RX rate %d, freq %lu\n", rxrate[myddc], rxfreq[myddc]);
+            //     printf("RX thread %d: DDC not enabled, waiting...\n", myddc);
             usleep(5000);
             clock_gettime(CLOCK_MONOTONIC, &delay);
             rxptr = txptr - 4096;
@@ -1060,7 +1201,7 @@ void* rx_thread(void *data) {
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &delay, NULL);
 #else
         // Receive samples from bladeRF (blocking)
-        status = bladerf_sync_rx(dev, bladerf_buf, samples_per_packet, &meta, 1000);
+        status = bladerf_sync_rx(bladerf_dev, bladerf_buf, samples_per_packet, &meta, 1000);
 //        printf("RX thread %d: bladerf_sync_rx status=%d, actual_count=%u\n", myddc, status, actual_count);
         if (status != 0) {
             dbg_printf(1, "bladeRF RX error or short read: %s (got %u samples)\n", bladerf_strerror(status), actual_count);
@@ -1070,22 +1211,76 @@ void* rx_thread(void *data) {
         // 24 bits per sample (protocol expects 24 bits/sample, bladeRF gives 16 bits/sample)
         // Pack I/Q samples into 24-bit format (sign-extend 16->24 bits)
         for (i = 0; i < samples_per_packet; i++) {
-            int32_t sample_i = (int16_t)bladerf_buf[2*i];
-            int32_t sample_q = (int16_t)bladerf_buf[2*i+1];
+ //           int32_t sample_i = scale_12bit_to_24bit(bladerf_buf[2*i]);
+ //           int32_t sample_q = scale_12bit_to_24bit(bladerf_buf[2*i+1]);
+            int32_t sample_i = 2 * ((int32_t)bladerf_buf[2*i]);
+            int32_t sample_q = 2 * ((int32_t)bladerf_buf[2*i+1]);
+           // printf("RX thread %d: sample %d: I=%d, Q=%d\n", myddc, i, sample_i, sample_q);
+           // if (sample_i < -8388608 || sample_i > 8388607 || sample_q < -8388608 || sample_q > 8388607) {
+           //     dbg_printf(1, "RX thread %d: sample out of range: I=%d, Q=%d\n", myddc, sample_i, sample_q);
+           //     continue;
+           // }
+#ifndef DECIMATION_FACTOR
+            // Pack into 24-bit format (3 bytes per sample)
+            // Q sample
+            *p++ = (sample_q >> 16) & 0xFF;
+            *p++ = (sample_q >> 8) & 0xFF;
+            *p++ = (sample_q >> 0) & 0xFF;
+            // I sample
+            *p++ = (sample_i >> 16) & 0xFF;
+            *p++ = (sample_i >> 8) & 0xFF;
+            *p++ = (sample_i >> 0) & 0xFF;
+#if 0
             // I
-            *p++ = 0;
+            *p++ = (sample_i >> 16) & 0xFF;
             *p++ = (sample_i >> 8) & 0xFF;
             *p++ = (sample_i >> 0) & 0xFF;
             // Q
-            *p++ = 0;
+            *p++ = (sample_q >> 16) & 0xFF;
             *p++ = (sample_q >> 8) & 0xFF;
             *p++ = (sample_q >> 0) & 0xFF;
+#else
+            *p++ = (sample_q >> 16) & 0xFF;
+            *p++ = (sample_q >> 8) & 0xFF;
+            *p++ = (sample_q >> 0) & 0xFF;
+            // Q
+            *p++ = (sample_i >> 16) & 0xFF;
+            *p++ = (sample_i >> 8) & 0xFF;
+            *p++ = (sample_i >> 0) & 0xFF;
+#endif
+#else
+    // Apply filter
+    int32_t filtered_i = fir_filter(&i_state, sample_i);
+    int32_t filtered_q = fir_filter(&q_state, sample_q);
+
+    // Decimate by factor of 4
+    if (decimation_counter == 0) {
+        // Scale filtered output and pack into 24-bit format
+      //  filtered_i = (filtered_i >> 4);  // Adjust scaling as needed
+      //  filtered_q = (filtered_q >> 4);  // Adjust scaling as needed
+
+        // Q sample
+        *p++ = (filtered_q >> 16) & 0xFF;
+        *p++ = (filtered_q >> 8) & 0xFF;
+        *p++ = (filtered_q >> 0) & 0xFF;
+
+        // I sample
+        *p++ = (filtered_i >> 16) & 0xFF;
+        *p++ = (filtered_i >> 8) & 0xFF;
+        *p++ = (filtered_i >> 0) & 0xFF;
+
+        output_samples++;
+    }
+
+    decimation_counter = (decimation_counter + 1) % DECIMATION_FACTOR;
+#endif
         }
 
-#if 1        
+#if 0      
         delay.tv_nsec += wait;
         while (delay.tv_nsec >= 1000000000) {
-            delay.tv_nsec -= 1000000000;
+
+         delay.tv_nsec -= 1000000000;
             delay.tv_sec++;
         }
 
@@ -1099,8 +1294,9 @@ void* rx_thread(void *data) {
     }
 
     printf("RX thread %d: exiting\n", myddc);
-    bladerf_enable_module(dev, BLADERF_CHANNEL_RX(0), false);
-    bladerf_close(dev);
+    bladerf_enable_module(bladerf_dev, BLADERF_CHANNEL_RX(0), false);
+    bladerf_close(bladerf_dev);
+    bladerf_dev = NULL;
     close(sock);
     return NULL;
 }
