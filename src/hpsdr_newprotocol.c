@@ -12,7 +12,7 @@
 
 #include <libbladeRF.h>
 
-//#define LIQUID_MODE 1
+#define LIQUID_MODE 1
 #ifdef LIQUID_MODE
 #include <liquid/liquid.h>
 #define DECIMATION_FACTOR 4
@@ -24,7 +24,7 @@
 #include "hpsdr_definitions.h"
 #include "hpsdr_functions.h"
 
-#define NUMRECEIVERS 4
+#define NUMRECEIVERS 1
 
 // These variables represent the state of the machine
 
@@ -644,6 +644,7 @@ void* duc_specific_thread(void *data) {
         if (txrate != rc) {
             txrate = rc;
             dbg_printf(1, "TX: DUC sample rate: %d\n", rc);
+            printf("TX: DUC sample rate: %d\n", rc);
         }
         if (ducbits != buffer[16]) {
             ducbits = buffer[16];
@@ -1001,7 +1002,7 @@ void* rx_thread(void *data) {
         close(sock);
         return NULL;
     }
-    status = bladerf_set_bandwidth(bladerf_dev, BLADERF_CHANNEL_RX(0), 1536000, NULL);
+    status = bladerf_set_bandwidth(bladerf_dev, BLADERF_CHANNEL_RX(0), 768000, NULL);
     if (status != 0) {
         fprintf(stderr, "Failed to set bandwidth = %s\n", bladerf_strerror(status));
         bladerf_close(bladerf_dev);
@@ -1056,7 +1057,8 @@ void* rx_thread(void *data) {
     meta.flags = BLADERF_META_FLAG_RX_NOW;
 
 #ifdef LIQUID_MODE
-    msresamp_crcf decim = msresamp_crcf_create(0.25f, 60.0f); // 60 dB stopband
+//    msresamp_crcf decim = msresamp_crcf_create(0.25f, 60.0f); // 60 dB stopband
+    msresamp2_crcf decim = msresamp2_crcf_create(LIQUID_RESAMP_DECIM, DECIMATION_FACTOR, 0.1f, 0.0f, 60.0f);
 #endif
 
     while (run) {
@@ -1123,96 +1125,7 @@ void* rx_thread(void *data) {
         *p++ = 24;
         *p++ = 0;
         *p++ = sync ? 2 * size : size;  // should be 238 in either case
-#if 0        
-        for (i = 0; i < size; i++) {
-            // produce noise depending on the ADC
-            i1sample = i0sample = noiseItab[noisept];
-            q1sample = q0sample = noiseQtab[noisept++];
-            if (noisept == LENNOISE)
-                noisept = rand_r(&seed) / NOISEDIV;
-            // PS: produce sample PAIRS,
-            // a) distorted TX data (with Drive and Attenuation)
-            // b) original TX data (normalized)
-            //
-            // DIV: produce sample PAIRS,
-            // a) add man-made-noise on I-sample of RX channel
-            // b) add man-made-noise on Q-sample of "synced" channel
-            if (sync && (rxrate[myadc] == 192) && ptt && (syncadc == adc)) {
-                irsample = isample[rxptr];
-                qrsample = qsample[rxptr++];
-                if (rxptr >= NEWRTXLEN)
-                    rxptr = 0;
-                fac = txatt_dbl * txdrv_dbl * (IM3a + IM3b * (irsample * irsample + qrsample * qrsample) * txdrv_dbl * txdrv_dbl);
-                if (myadc == 0) {
-                    i0sample += irsample * fac;
-                    q0sample += qrsample * fac;
-                }
-                i1sample = irsample * 0.2899;
-                q1sample = qrsample * 0.2899;
-            } else if (myadc == 0) {
-                i0sample += toneItab[tonept] * 0.0002239 * rxatt0_dbl;
-                q0sample += toneQtab[tonept] * 0.0002239 * rxatt0_dbl;
-                tonept += decimation;
-                if (tonept >= LENTONE)
-                    tonept = 0;
-            }
-            if (diversity && !sync && myadc == 0) {
-                i0sample += 0.0001 * rxatt0_dbl * divtab[divptr];
-                divptr += decimation;
-                if (divptr >= LENDIV)
-                    divptr = 0;
-            }
-            if (diversity && !sync && myadc == 1) {
-                q0sample += 0.0002 * rxatt1_dbl * divtab[divptr];
-                divptr += decimation;
-                if (divptr >= LENDIV)
-                    divptr = 0;
-            }
-            if (diversity && sync && !ptt) {
-                if (myadc == 0)
-                    i0sample += 0.0001 * rxatt0_dbl * divtab[divptr];
-                if (syncadc == 1)
-                    q1sample += 0.0002 * rxatt1_dbl * divtab[divptr];
-                divptr += decimation;
-                if (divptr >= LENDIV)
-                    divptr = 0;
-            }
-            if (sync) {
-                sample = i0sample * 8388607.0;
-                *p++ = (sample >> 16) & 0xFF;
-                *p++ = (sample >> 8) & 0xFF;
-                *p++ = (sample >> 0) & 0xFF;
-                sample = q0sample * 8388607.0;
-                *p++ = (sample >> 16) & 0xFF;
-                *p++ = (sample >> 8) & 0xFF;
-                *p++ = (sample >> 0) & 0xFF;
-                sample = i1sample * 8388607.0;
-                *p++ = (sample >> 16) & 0xFF;
-                *p++ = (sample >> 8) & 0xFF;
-                *p++ = (sample >> 0) & 0xFF;
-                sample = q1sample * 8388607.0;
-                *p++ = (sample >> 16) & 0xFF;
-                *p++ = (sample >> 8) & 0xFF;
-                *p++ = (sample >> 0) & 0xFF;
-            } else {
-                sample = i0sample * 8388607.0;
-                *p++ = (sample >> 16) & 0xFF;
-                *p++ = (sample >> 8) & 0xFF;
-                *p++ = (sample >> 0) & 0xFF;
-                sample = q0sample * 8388607.0;
-                *p++ = (sample >> 16) & 0xFF;
-                *p++ = (sample >> 8) & 0xFF;
-                *p++ = (sample >> 0) & 0xFF;
-            }
-        }
-        delay.tv_nsec += wait;
-        while (delay.tv_nsec >= 1000000000) {
-            delay.tv_nsec -= 1000000000;
-            delay.tv_sec++;
-        }
 
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &delay, NULL);
-#else
         // Receive samples from bladeRF (blocking)
         status = bladerf_sync_rx(bladerf_dev, bladerf_buf, samples_per_packet, &meta, 1000);
 //        printf("RX thread %d: bladerf_sync_rx status=%d, actual_count=%u\n", myddc, status, actual_count);
@@ -1226,10 +1139,12 @@ void* rx_thread(void *data) {
         unsigned int num_written;
         for (int i = 0; i < samples_per_packet; i++)
             in[i] = bladerf_buf[2*i] / 4096.0f + _Complex_I * (bladerf_buf[2*i+1] / 4096.0f);
-        msresamp_crcf_execute(decim, in, samples_per_packet, out, &num_written);
+//        msresamp_crcf_execute(decim, in, samples_per_packet, out, &num_written);
+        msresamp2_crcf_execute(decim, in, out);
+        float scale = 16777216.0f * 0.8f;
         for (int i = 0; i < samples_per_packet / DECIMATION_FACTOR; i++) {
-            int32_t sample_i = (int32_t)(crealf(out[i]) * 16777215.0f);
-            int32_t sample_q = (int32_t)(cimagf(out[i]) * 16777215.0f);
+            int32_t sample_q = (int32_t)(scale * crealf(out[i]));
+            int32_t sample_i = (int32_t)(scale * cimagf(out[i]));
             // Q sample
             *p++ = (sample_q >> 16) & 0xFF;
             *p++ = (sample_q >> 8) & 0xFF;
@@ -1239,6 +1154,7 @@ void* rx_thread(void *data) {
             *p++ = (sample_i >> 8) & 0xFF;
             *p++ = (sample_i >> 0) & 0xFF;
         }
+        msresamp_crcf_reset(decim);
 #else
         // 24 bits per sample (protocol expects 24 bits/sample, bladeRF gives 16 bits/sample)
         // Pack I/Q samples into 24-bit format (sign-extend 16->24 bits)
@@ -1301,13 +1217,15 @@ void* rx_thread(void *data) {
 
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &delay, NULL);
 #endif
-#endif
+
         if (sendto(sock, buffer, 1444, 0, (struct sockaddr*) &addr_new, sizeof(addr_new)) < 0) {
             dbg_printf(1, "***** ERROR: RX thread sendto\n");
             break;
         }
     }
 
+    msresamp_crcf_destroy(decim);
+//    msresamp2_crcf_destroy(decim);
     printf("RX thread %d: exiting\n", myddc);
     bladerf_enable_module(bladerf_dev, BLADERF_CHANNEL_RX(0), false);
     bladerf_close(bladerf_dev);
@@ -1377,6 +1295,7 @@ void* tx_thread(void *data) {
         }
         p = buffer + 4;
         sum = 0.0;
+
         for (i = 0; i < 240; i++) {
             // process 240 TX iq samples
             sample = (int) ((signed char) (*p++)) << 16;
@@ -1404,6 +1323,8 @@ void* tx_thread(void *data) {
             sum += (di * di + dq * dq);
         }
         txlevel = sum * txdrv_dbl * txdrv_dbl * 0.0041667;
+        if (txlevel > 0.01)
+          printf("txlevel=%f, txdrive=%d\n", txlevel, txdrive);
     }
     close(sock);
     return NULL;
